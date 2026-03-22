@@ -1,0 +1,57 @@
+[package]
+name = "arb-bot"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance Rust-based cross-DEX arbitrage bot with Flashbots integration"
+license = "MIT"
+
+[dependencies]
+# Ethereum interaction
+ethers = { version = "2.0", features = ["ws", "rustls", "abigen"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client
+reqwest = { version = "0.11", features = ["json", "rustls-tls"], default-features = false }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Error handling
+eyre = "0.6"
+thiserror = "1"
+
+# Math / big numbers
+num-bigint = "0.4"
+num-traits = "0.2"
+rust_decimal = "1"
+
+# Config
+toml = "0.8"
+dotenv = "0.15"
+
+# Timing
+chrono = { version = "0.4", features = ["serde"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Async utilities
+futures = "0.3"
+async-trait = "0.1"
+
+# Hex encoding
+hex = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
