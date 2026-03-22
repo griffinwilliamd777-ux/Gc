@@ -78,7 +78,11 @@ impl DexPool {
 
         // Fee: for Uniswap V2 style, fee is 30 bps (0.3%).
         // amount_in_with_fee = amount_in * (10000 - fee_bps)
-        let fee_factor = U256::from(10000u64 - u64::from(self.fee_bps));
+        let fee_bps = u64::from(self.fee_bps);
+        if fee_bps >= 10000 {
+            return None;
+        }
+        let fee_factor = U256::from(10000u64 - fee_bps);
         let amount_in_with_fee = amount_in * fee_factor;
         let numerator = amount_in_with_fee * reserve_out;
         let denominator = reserve_in * U256::from(10000u64) + amount_in_with_fee;

@@ -101,23 +101,43 @@ async fn main() -> Result<()> {
         config.arbitrage.max_hops,
     );
 
+    // Parse executor contract address.
+    let executor_address = Address::from_str(&config.execution.executor_address)
+        .map_err(|_| eyre::eyre!("Invalid executor_address: {}", config.execution.executor_address))?;
+    info!(executor = %executor_address, "Executor contract configured");
+
     // Initialize trade executor.
     let executor = TradeExecutor::new(
         client.clone(),
         wallet,
         flashbots,
+        executor_address,
         config.execution.slippage_bps,
         config.execution.gas_limit_multiplier,
         config.execution.simulate_before_send,
         config.execution.dry_run,
     );
 
-    // Define input amounts to test (in wei).
-    let input_amounts: Vec<U256> = vec![
-        U256::from(1_000_000_000_000_000_000u128),  // 1 ETH
-        U256::from(5_000_000_000_000_000_000u128),  // 5 ETH
-        U256::from(10_000_000_000_000_000_000u128), // 10 ETH
-    ];
+    // Build token-aware input amounts: test multiple sizes per token.
+    // For 18-decimal tokens (ETH/DAI): 1, 5, 10 units.
+    // For 6-decimal tokens (USDC/USDT): 1000, 5000, 10000 units.
+    let mut input_amounts: Vec<U256> = Vec::new();
+    for token in &config.tokens {
+        let base = U256::from(10u64).pow(U256::from(token.decimals));
+        if token.decimals >= 12 {
+            // 18-decimal tokens: 1, 5, 10
+            input_amounts.push(base);
+            input_amounts.push(base * U256::from(5u64));
+            input_amounts.push(base * U256::from(10u64));
+        } else {
+            // 6-decimal tokens: 1000, 5000, 10000
+            input_amounts.push(base * U256::from(1000u64));
+            input_amounts.push(base * U256::from(5000u64));
+            input_amounts.push(base * U256::from(10000u64));
+        }
+    }
+    input_amounts.sort();
+    input_amounts.dedup();
 
     info!("Entering main loop");
 
@@ -129,27 +149,21 @@ async fn main() -> Result<()> {
         interval.tick().await;
 
         // Update gas price.
-        match gas_optimizer.get_optimal_gas_price().await {
+        let gas_price = match gas_optimizer.get_optimal_gas_price().await {
             Ok(gas_price) => {
                 detector.update_gas_price(gas_price);
+                gas_price
             }
             Err(e) => {
                 warn!(error = %e, "Failed to update gas price");
                 continue;
             }
-        }
+        };
 
-        // Check if gas is acceptable.
-        match gas_optimizer.is_gas_acceptable().await {
-            Ok(false) => {
-                info!("Gas price too high — skipping this cycle");
-                continue;
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to check gas");
-                continue;
-            }
-            _ => {}
+        // Check if gas is acceptable (without refetching from RPC).
+        if gas_price > gas_optimizer.max_gas_price() {
+            info!(gas_price = %gas_price, "Gas price too high — skipping this cycle");
+            continue;
         }
 
         // Refresh pool states.
@@ -184,7 +198,7 @@ async fn main() -> Result<()> {
         if let Some(best) = opportunities.first() {
             info!(opportunity = %best, "Executing best opportunity");
 
-            match executor.execute(best).await {
+            match executor.execute(best, block_number, gas_price).await {
                 Ok(Some(tx_hash)) => {
                     info!(tx_hash = %tx_hash, "Trade executed successfully");
                 }

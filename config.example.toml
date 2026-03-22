@@ -40,6 +40,8 @@ gas_limit_multiplier = 1.2
 simulate_before_send = true
 # Dry run mode: log opportunities but don't send transactions
 dry_run = true
+# Deploy ArbExecutor.sol and put the address here
+executor_address = "0x0000000000000000000000000000000000000000"
 
 # =============================================================================
 # Token Definitions

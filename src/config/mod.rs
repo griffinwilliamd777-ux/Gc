@@ -61,6 +61,8 @@ pub struct ExecutionConfig {
     pub simulate_before_send: bool,
     /// Dry run mode — log but don't send transactions
     pub dry_run: bool,
+    /// Deployed ArbExecutor contract address
+    pub executor_address: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -92,6 +94,40 @@ impl BotConfig {
     pub fn from_file(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)?;
         let config: BotConfig = toml::from_str(&content)?;
+        config.validate()?;
         Ok(config)
+    }
+
+    /// Validate configuration values at startup.
+    fn validate(&self) -> Result<()> {
+        if self.execution.slippage_bps >= 10000 {
+            return Err(eyre::eyre!(
+                "slippage_bps must be < 10000, got {}",
+                self.execution.slippage_bps
+            ));
+        }
+        if self.execution.gas_limit_multiplier < 1.0 {
+            return Err(eyre::eyre!(
+                "gas_limit_multiplier must be >= 1.0, got {}",
+                self.execution.gas_limit_multiplier
+            ));
+        }
+        for pool in &self.pools {
+            let fee = pool.fee_bps.unwrap_or(30);
+            if fee >= 10000 {
+                return Err(eyre::eyre!(
+                    "Pool {} fee_bps must be < 10000, got {}",
+                    pool.address,
+                    fee
+                ));
+            }
+        }
+        if self.pools.is_empty() {
+            return Err(eyre::eyre!("No pools configured"));
+        }
+        if self.tokens.is_empty() {
+            return Err(eyre::eyre!("No tokens configured"));
+        }
+        Ok(())
     }
 }

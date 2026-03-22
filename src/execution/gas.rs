@@ -26,6 +26,11 @@ impl<M: Middleware + 'static> GasOptimizer<M> {
         }
     }
 
+    /// Maximum gas price (wei) the bot will allow.
+    pub fn max_gas_price(&self) -> U256 {
+        self.max_gas_price
+    }
+
     /// Get the current optimal gas price considering network conditions.
     pub async fn get_optimal_gas_price(&mut self) -> Result<U256> {
         let current_gas = self
