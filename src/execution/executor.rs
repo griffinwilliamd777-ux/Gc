@@ -115,14 +115,9 @@ impl<M: Middleware + 'static> TradeExecutor<M> {
         // Use the first pool as target (in production, use custom router).
         let target = opportunity.path.hops[0].pool_address;
 
-        let gas_estimate = U256::from(150_000u64) * U256::from(opportunity.path.hop_count() as u64);
+        let gas_estimate =
+            U256::from(150_000u64) * U256::from(opportunity.path.hop_count() as u64);
         let gas_limit = self.apply_gas_multiplier(gas_estimate);
-
-        let gas_price = self
-            .client
-            .get_gas_price()
-            .await
-            .map_err(|e| eyre::eyre!("Failed to get gas price: {}", e))?;
 
         let nonce = self
             .client
