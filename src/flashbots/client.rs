@@ -82,11 +82,13 @@ impl FlashbotsClient {
     }
 
     /// Send a transaction bundle to the Flashbots relay.
-    /// The bundle is submitted for the next few blocks.
+    /// Submits the bundle targeting blocks current+1 through current+max_block_offset.
+    /// Returns the bundle hash from the first accepted submission.
     pub async fn send_bundle(
         &self,
         tx: TypedTransaction,
         wallet: &LocalWallet,
+        current_block: u64,
     ) -> Result<TxHash> {
         // Sign the transaction.
         let signature = wallet
@@ -97,81 +99,87 @@ impl FlashbotsClient {
         let raw_tx = tx.rlp_signed(&signature);
         let raw_tx_hex = format!("0x{}", hex::encode(&raw_tx));
 
-        // Get the current block number to target.
-        // In production, you'd get this from your RPC provider.
-        // For now, we submit for target_block = current + 1 through current + max_offset.
-        let bundle_body = serde_json::json!({
-            "txs": [raw_tx_hex],
-            "blockNumber": format!("0x{:x}", 0u64), // Placeholder — set dynamically
-            "minTimestamp": 0,
-            "maxTimestamp": 0,
-        });
+        let mut last_hash: Option<TxHash> = None;
 
-        let request = FlashbotsBundleRequest {
-            jsonrpc: "2.0".to_string(),
-            id: 1,
-            method: "eth_sendBundle".to_string(),
-            params: vec![bundle_body],
-        };
+        // Submit bundle for each target block in range.
+        for offset in 1..=self.max_block_offset {
+            let target_block = current_block + offset;
 
-        // Sign the request payload for Flashbots authentication.
-        let body = serde_json::to_string(&request)?;
-        let signature = wallet
-            .sign_message(body.as_bytes())
-            .await
-            .map_err(|e| eyre::eyre!("Failed to sign Flashbots request: {}", e))?;
+            let bundle_body = serde_json::json!({
+                "txs": [raw_tx_hex],
+                "blockNumber": format!("0x{:x}", target_block),
+                "minTimestamp": 0,
+                "maxTimestamp": 0,
+            });
 
-        let auth_header = format!(
-            "{}:0x{}",
-            format!("{:?}", wallet.address()),
-            signature
-        );
+            let request = FlashbotsBundleRequest {
+                jsonrpc: "2.0".to_string(),
+                id: offset,
+                method: "eth_sendBundle".to_string(),
+                params: vec![bundle_body],
+            };
 
-        let response = self
-            .http_client
-            .post(&self.relay_url)
-            .header("Content-Type", "application/json")
-            .header("X-Flashbots-Signature", &auth_header)
-            .body(body)
-            .send()
-            .await?;
+            // Sign the request payload for Flashbots authentication.
+            let body = serde_json::to_string(&request)?;
+            let sig = wallet
+                .sign_message(body.as_bytes())
+                .await
+                .map_err(|e| eyre::eyre!("Failed to sign Flashbots request: {}", e))?;
 
-        let status = response.status();
-        let response_text = response.text().await?;
+            let auth_header = format!("{:?}:0x{}", wallet.address(), sig);
 
-        if !status.is_success() {
-            error!(
-                status = %status,
-                body = %response_text,
-                "Flashbots relay returned error"
-            );
-            return Err(eyre::eyre!(
-                "Flashbots relay error: {} - {}",
-                status,
-                response_text
-            ));
+            let response = self
+                .http_client
+                .post(&self.relay_url)
+                .header("Content-Type", "application/json")
+                .header("X-Flashbots-Signature", &auth_header)
+                .body(body)
+                .send()
+                .await?;
+
+            let status = response.status();
+            let response_text = response.text().await?;
+
+            if !status.is_success() {
+                warn!(
+                    status = %status,
+                    target_block = target_block,
+                    "Flashbots relay error for block"
+                );
+                continue;
+            }
+
+            let bundle_response: FlashbotsBundleResponse =
+                serde_json::from_str(&response_text)?;
+
+            if let Some(ref error) = bundle_response.error {
+                warn!(
+                    code = error.code,
+                    message = %error.message,
+                    target_block = target_block,
+                    "Flashbots error for block"
+                );
+                continue;
+            }
+
+            if let Some(result) = bundle_response.result {
+                let tx_hash = result.bundle_hash.parse::<TxHash>()?;
+                info!(
+                    bundle_hash = %result.bundle_hash,
+                    target_block = target_block,
+                    "Bundle accepted by Flashbots relay"
+                );
+                last_hash = Some(tx_hash);
+            }
         }
 
-        let bundle_response: FlashbotsBundleResponse = serde_json::from_str(&response_text)?;
-
-        if let Some(error) = bundle_response.error {
-            return Err(eyre::eyre!(
-                "Flashbots error ({}): {}",
-                error.code,
-                error.message
-            ));
-        }
-
-        if let Some(result) = bundle_response.result {
-            let tx_hash = result.bundle_hash.parse::<TxHash>()?;
-            info!(
-                bundle_hash = %result.bundle_hash,
-                "Bundle accepted by Flashbots relay"
-            );
-            return Ok(tx_hash);
-        }
-
-        Err(eyre::eyre!("Unexpected Flashbots response: {}", response_text))
+        last_hash.ok_or_else(|| {
+            eyre::eyre!(
+                "All Flashbots bundle submissions failed for blocks {}-{}",
+                current_block + 1,
+                current_block + self.max_block_offset
+            )
+        })
     }
 
     /// Simulate a bundle using eth_callBundle.

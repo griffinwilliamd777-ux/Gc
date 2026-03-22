@@ -58,8 +58,8 @@ pub fn optimal_input_v2(
 
     let ra_in = reserve_a_in.as_u128() as f64;
     let ra_out = reserve_a_out.as_u128() as f64;
-    let rb_out = reserve_b_in.as_u128() as f64; // token_in reserve on pool B
-    let rb_in = reserve_b_out.as_u128() as f64; // token_out reserve on pool B
+    let rb_in = reserve_b_in.as_u128() as f64; // token_in reserve on pool B
+    let rb_out = reserve_b_out.as_u128() as f64; // token_out reserve on pool B
 
     if ra_in == 0.0 || ra_out == 0.0 || rb_in == 0.0 || rb_out == 0.0 {
         return None;

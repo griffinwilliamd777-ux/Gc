@@ -40,7 +40,12 @@ impl<M: Middleware + 'static> TradeExecutor<M> {
     }
 
     /// Execute an arbitrage opportunity.
-    pub async fn execute(&self, opportunity: &ArbOpportunity) -> Result<Option<TxHash>> {
+    pub async fn execute(
+        &self,
+        opportunity: &ArbOpportunity,
+        current_block: u64,
+        gas_price: U256,
+    ) -> Result<Option<TxHash>> {
         info!(
             arb_type = %opportunity.arb_type,
             net_profit = %opportunity.net_profit,
@@ -49,7 +54,7 @@ impl<M: Middleware + 'static> TradeExecutor<M> {
         );
 
         // Build the multicall / swap transaction.
-        let tx = self.build_transaction(opportunity).await?;
+        let tx = self.build_transaction(opportunity, gas_price).await?;
 
         if self.dry_run {
             info!("DRY RUN — transaction not sent");
@@ -76,7 +81,9 @@ impl<M: Middleware + 'static> TradeExecutor<M> {
 
         // Send via Flashbots if available, otherwise direct.
         if let Some(ref flashbots) = self.flashbots {
-            let tx_hash = flashbots.send_bundle(tx, &self.wallet).await?;
+            let tx_hash = flashbots
+                .send_bundle(tx, &self.wallet, current_block)
+                .await?;
             info!(tx_hash = %tx_hash, "Bundle submitted via Flashbots");
             Ok(Some(tx_hash))
         } else {
@@ -92,7 +99,11 @@ impl<M: Middleware + 'static> TradeExecutor<M> {
     }
 
     /// Build the swap transaction for the arbitrage path.
-    async fn build_transaction(&self, opportunity: &ArbOpportunity) -> Result<TypedTransaction> {
+    async fn build_transaction(
+        &self,
+        opportunity: &ArbOpportunity,
+        gas_price: U256,
+    ) -> Result<TypedTransaction> {
         // Calculate minimum output with slippage protection.
         let min_output = self.apply_slippage(opportunity.expected_out);
 
