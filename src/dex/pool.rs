@@ -90,8 +90,9 @@ impl DexPool {
         Some(numerator / denominator)
     }
 
-    /// Calculate output for V3 using simplified sqrt price math.
-    /// This is a simplified model — production would use tick-level liquidity.
+    /// Calculate output for V3 using single-tick concentrated liquidity math.
+    /// Assumes the swap stays within the current tick range.
+    /// For large swaps that cross ticks, this will overestimate output.
     pub fn get_amount_out_v3(&self, amount_in: U256, token_in: Address) -> Option<U256> {
         let reserves = match &self.state {
             PoolState::Active(r) => r,
@@ -107,35 +108,50 @@ impl DexPool {
 
         let is_zero_for_one = token_in == self.token0;
 
-        // Simplified V3 output calculation.
-        // In production, iterate through ticks for accurate output.
-        // For a small swap within current tick range:
-        // If token0 -> token1: delta_y = L * (sqrt_p_new - sqrt_p) simplified
-        // If token1 -> token0: delta_x = L * (1/sqrt_p_new - 1/sqrt_p)
-
-        // Apply fee
-        let fee_factor = U256::from(1_000_000u64 - u64::from(self.fee_bps) * 100);
+        // Apply fee: fee_bps is in basis points (e.g., 30 = 0.3%).
+        // V3 fees are in millionths, so fee_bps * 100 = fee in 1e-6 units.
+        let fee_millionths = u64::from(self.fee_bps) * 100;
+        if fee_millionths >= 1_000_000 {
+            return None;
+        }
+        let fee_factor = U256::from(1_000_000u64 - fee_millionths);
         let amount_in_after_fee = amount_in * fee_factor / U256::from(1_000_000u64);
+
+        let q96 = U256::from(1u64) << 96;
 
         if is_zero_for_one {
             // token0 in -> token1 out
-            // Approximate: use price = (sqrt_price / 2^96)^2
-            // amount_out ≈ amount_in * price * fee_factor
-            let price_sq = sqrt_price * sqrt_price;
-            let q96_sq = U256::from(1u64) << 192;
-            if q96_sq.is_zero() {
+            // new_sqrt_price = L * sqrt_price / (L + amount_in_after_fee * sqrt_price / 2^96)
+            // amount_out = L * (sqrt_price - new_sqrt_price) / 2^96
+            let l_x_sqrt = liquidity * sqrt_price;
+            let denom = liquidity + amount_in_after_fee * sqrt_price / q96;
+            if denom.is_zero() {
                 return None;
             }
-            let amount_out = amount_in_after_fee * price_sq / q96_sq;
+            let new_sqrt_price = l_x_sqrt / denom;
+            if sqrt_price <= new_sqrt_price {
+                return None; // No output (shouldn't happen for zero_for_one)
+            }
+            let delta_sqrt = sqrt_price - new_sqrt_price;
+            let amount_out = liquidity * delta_sqrt / q96;
             Some(amount_out)
         } else {
             // token1 in -> token0 out
-            let q96_sq = U256::from(1u64) << 192;
-            let price_sq = sqrt_price * sqrt_price;
-            if price_sq.is_zero() {
+            // new_sqrt_price = sqrt_price + amount_in_after_fee * 2^96 / L
+            // amount_out = L * 2^96 * (1/sqrt_price - 1/new_sqrt_price)
+            //            = L * 2^96 * (new_sqrt_price - sqrt_price) / (sqrt_price * new_sqrt_price)
+            let delta_sqrt = amount_in_after_fee * q96 / liquidity;
+            let new_sqrt_price = sqrt_price + delta_sqrt;
+            if new_sqrt_price.is_zero() || sqrt_price.is_zero() {
                 return None;
             }
-            let amount_out = amount_in_after_fee * q96_sq / price_sq;
+            // amount_out = L * (new_sqrt_price - sqrt_price) * 2^96 / (sqrt_price * new_sqrt_price)
+            // Rewrite to avoid overflow: L * delta_sqrt / (sqrt_price * new_sqrt_price / 2^96)
+            let price_product = sqrt_price * new_sqrt_price / q96;
+            if price_product.is_zero() {
+                return None;
+            }
+            let amount_out = liquidity * delta_sqrt / price_product;
             Some(amount_out)
         }
     }
